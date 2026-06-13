@@ -33,8 +33,8 @@ Run as root:
 apt update
 apt install -y git
 cd /opt
-git clone https://github.com/YOUR_USERNAME/tessera-api-simulator.git
-cd tessera-api-simulator
+git clone https://github.com/smokey-live/Tessera_Monitoring_and_Control.git
+cd Tessera_Monitoring_and_Control
 ./install.sh
 ```
 
