@@ -38,12 +38,22 @@ def data_dir() -> Path:
     return Path(os.environ.get("TESSERA_SIM_BASE", default_base))
 
 
+def configure_stdio() -> None:
+    log_dir = data_dir() / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    if sys.stdout is None:
+        sys.stdout = open(log_dir / "stdout.log", "a", encoding="utf-8", buffering=1)
+    if sys.stderr is None:
+        sys.stderr = open(log_dir / "stderr.log", "a", encoding="utf-8", buffering=1)
+
+
 def configure_environment() -> None:
     os.environ.setdefault("TESSERA_SIM_BASE", str(data_dir()))
     os.environ.setdefault("TESSERA_APP_DIR", str(app_dir()))
     os.environ.setdefault("PORT", str(HTTP_PORT))
     os.environ.setdefault("TESSERA_TCP_PORT", str(TCP_PORT))
     os.environ.setdefault("TESSERA_SYSLOG_PORT", str(SYSLOG_PORT))
+    configure_stdio()
     sys.path.insert(0, str(app_dir()))
 
 
@@ -74,7 +84,7 @@ def run_http_service() -> None:
     from tessera_sim import app, init_state
 
     init_state()
-    uvicorn.run(app, host="0.0.0.0", port=HTTP_PORT, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=HTTP_PORT, log_config=None, access_log=False)
 
 
 def run_syslog_service() -> None:
