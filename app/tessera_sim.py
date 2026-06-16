@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse, FileResponse, HTMLResponse, RedirectResponse
 from log_store import clear_all_logs, clear_logs, export_logs_csv, list_logs, list_processors, log_storage_summary, refresh_processor_name, set_processor_ignored, set_processor_paused
+from processor_discovery import ensure_discovery_running, list_discovered_processors
 from topology_monitor import add_monitor, get_cards_wide, list_monitors, poll_due_monitors, remove_monitor, reorder_monitors, set_cards_wide, topology_svg
 
 BASE = Path(os.environ.get('TESSERA_SIM_BASE','/var/lib/tessera-sim'))
@@ -39,6 +40,10 @@ def severity_display(value: Any) -> str:
     key = str(value)
     label = SYSLOG_SEVERITY_LABELS.get(key, '')
     return f'{key} {label}'.strip()
+
+@app.on_event('startup')
+async def startup_discovery():
+    ensure_discovery_running()
 
 def page_nav(active: str = '') -> str:
     items = [
@@ -318,15 +323,50 @@ async def api_route(path: str='', request: Request=None):
 
 @app.get('/')
 async def root():
+    ensure_discovery_running()
+    monitors = {monitor.get('ip') for monitor in list_monitors()}
+    discovered_rows = []
+    for processor in list_discovered_processors():
+        ip = processor.get('ip', '')
+        project = processor.get('project') or 'No project reported'
+        username = processor.get('username') or ip
+        serial = processor.get('serial') or ''
+        version = processor.get('version') or ''
+        meta = f'<span>{html_escape(ip)}</span><span>{html_escape(project)}</span>'
+        if serial or version:
+            meta += f'<span>{html_escape("Serial " + serial if serial else "")}{html_escape(" · v" + version if version else "")}</span>'
+        if ip in monitors:
+            discovered_rows.append(f"""
+            <div class="processor processor-monitored">
+              <div><b>{html_escape(username)}</b><div class="processor-meta">{meta}</div></div>
+              <span class="state">Monitored</span>
+            </div>""")
+        elif processor.get('api_available'):
+            discovered_rows.append(f"""
+            <div class="processor processor-ready">
+              <div><b>{html_escape(username)}</b><div class="processor-meta">{meta}</div></div>
+              <form method="post" action="/topology/add"><input type="hidden" name="ip" value="{html_escape(ip)}"><input type="hidden" name="interval" value="10"><input type="hidden" name="return_to" value="/"><button>Add to Monitoring</button></form>
+            </div>""")
+        else:
+            discovered_rows.append(f"""
+            <div class="processor processor-unavailable">
+              <div><b>{html_escape(username)}</b><div class="processor-meta">{meta}</div><div class="notice">Please enable IP control to enable monitoring and control</div></div>
+              <span class="state">IP control unavailable</span>
+            </div>""")
+    discovered_html = ''.join(discovered_rows) if discovered_rows else '<div class="empty">Searching for Tessera processors on the local network...</div>'
     return HTMLResponse(f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>{APP_NAME}</title>
 <style>
 body{{font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:#111;color:#eee;margin:0;padding:32px}}
-main{{max-width:920px;margin:0 auto}} h1{{margin:0 0 6px;font-size:34px}} .sub{{color:#aaa;margin-bottom:28px}}
+main{{max-width:1040px;margin:0 auto}} h1{{margin:0 0 6px;font-size:34px}} h2{{margin:32px 0 10px}} .sub{{color:#aaa;margin-bottom:28px}}
 .actions{{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}}
 .action{{display:block;background:#181818;border:1px solid #333;border-radius:8px;padding:18px;text-decoration:none;color:#eee}}
 .action:hover{{border-color:#5797d6;background:#1d1d1d}} .action b{{display:block;font-size:19px;margin-bottom:8px;color:#fff}}
 .action span{{display:block;color:#aaa;line-height:1.45}} .meta{{margin-top:28px;color:#888;font-size:13px}}
+.processors{{display:grid;gap:10px}} .processor{{display:flex;justify-content:space-between;gap:14px;align-items:center;border:1px solid #333;border-radius:8px;padding:13px 14px;background:#181818}}
+.processor b{{font-size:16px}} .processor-meta{{display:flex;gap:14px;flex-wrap:wrap;color:#aaa;font-size:13px;margin-top:4px}} .state{{font-size:12px;color:#bbb;white-space:nowrap}}
+.processor-monitored{{border-color:#090;background:#050505}} .processor-ready{{border-color:#2a8f44;background:#102016}} .processor-unavailable{{border-color:#6d4eb3;background:#21172e}}
+.processor-ready button{{background:#2f8b4b;color:#fff;border:0;border-radius:5px;padding:8px 12px;cursor:pointer}} .notice{{color:#d4c6ff;font-size:13px;margin-top:6px}} .empty{{border:1px dashed #333;border-radius:8px;color:#aaa;padding:14px}}
 a{{color:#8cc7ff}}
 </style></head>
 <body><main>
@@ -338,6 +378,9 @@ a{{color:#8cc7ff}}
   <a class="action" href="/logs"><b>Processor Logs</b><span>View syslog messages received from Tessera processors.</span></a>
   <a class="action" href="/topology"><b>Topology Monitoring</b><span>Monitor SX40 cable redundancy loop status.</span></a>
 </div>
+<h2>Available Processors</h2>
+<div class="sub">Auto-discovered via Tessera service discovery on the local network.</div>
+<div class="processors">{discovered_html}</div>
 <div class="meta">Raw API data is still available at <a href="/api/">/api/</a>.</div>
 </main></body></html>""")
 
@@ -999,12 +1042,30 @@ document.addEventListener('DOMContentLoaded', function() {{
 async def topology_add(request: Request):
     from urllib.parse import urlencode
     form = await request.form()
+    return_to = str(form.get('return_to') or '/topology')
+    if return_to not in ('/', '/topology'):
+        return_to = '/topology'
     try:
         add_monitor(str(form.get('ip', '')), int(form.get('interval') or 10))
         qs = urlencode({'msg': 'Processor added to topology monitoring.', 'level': 'info'})
     except Exception as ex:
         qs = urlencode({'msg': str(ex), 'level': 'error'})
-    return RedirectResponse('/topology?' + qs, status_code=303)
+    return RedirectResponse(return_to + ('?' + qs if qs else ''), status_code=303)
+
+@app.get('/discovery/data')
+async def discovery_data():
+    monitors = {monitor.get('ip') for monitor in list_monitors()}
+    rows = []
+    for processor in list_discovered_processors():
+        row = dict(processor)
+        if row.get('ip') in monitors:
+            row['state'] = 'monitored'
+        elif row.get('api_available'):
+            row['state'] = 'ready'
+        else:
+            row['state'] = 'ip-control-unavailable'
+        rows.append(row)
+    return JSONResponse({'processors': rows})
 
 @app.post('/topology/quick-add')
 async def topology_quick_add(request: Request):

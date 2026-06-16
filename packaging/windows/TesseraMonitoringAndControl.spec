@@ -20,6 +20,7 @@ a = Analysis(
     ],
     hiddenimports=[
         "log_store",
+        "processor_discovery",
         "syslog_server",
         "tessera_sim",
         "topology_monitor",

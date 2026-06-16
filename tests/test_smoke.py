@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 import tessera_sim  # noqa: E402
 import topology_monitor  # noqa: E402
 import log_store  # noqa: E402
+import processor_discovery  # noqa: E402
 from log_store import list_logs, record_log, set_processor_ignored, set_processor_paused, parse_syslog_message  # noqa: E402
 
 
@@ -87,6 +88,29 @@ class TesseraSimulatorSmokeTests(unittest.TestCase):
         self.assertIn("4 Warning", response.text)
         self.assertIn("warning row", response.text)
         self.assertNotIn("debug row", response.text)
+
+    def test_slp_discovery_packets_match_capture(self):
+        request = processor_discovery.build_service_request(7972)
+        self.assertEqual(
+            request.hex(),
+            "020100003220000000001f240002656e0000001170726f636573736f722e74657373657261000744454641554c5400000000",
+        )
+
+        reply = bytes.fromhex(
+            "020200004300000000001f240002656e0000000100ffff0029736572766963653a70726f636573736f722e746573736572613a2f2f3139322e3136382e302e31303200"
+        )
+        self.assertEqual(
+            processor_discovery.parse_service_reply(reply),
+            ["service:processor.tessera://192.168.0.102"],
+        )
+
+    def test_slp_attribute_reply_parser_handles_project_parentheses(self):
+        attrs = processor_discovery.parse_attribute_list(
+            "(gateway=-1062731523),(project=DATABRICKS EXPO - LOUNGE 4 (.104).ffb),(serial=011181),(username=P4 - V. LOUNGE - 4)"
+        )
+
+        self.assertEqual(attrs["project"], "DATABRICKS EXPO - LOUNGE 4 (.104).ffb")
+        self.assertEqual(attrs["username"], "P4 - V. LOUNGE - 4")
 
     def test_paused_and_ignored_log_collection(self):
         record_log("192.0.2.50", "UDP", "<13>Jun 12 21:59:46 tessera: before pause")
