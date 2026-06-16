@@ -32,17 +32,23 @@ class TesseraSimulatorSmokeTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn("Tessera Control and Monitoring", response.text)
-        self.assertIn('href="/api-contents"', response.text)
-        self.assertIn('href="/god"', response.text)
         self.assertIn('href="/logs"', response.text)
         self.assertIn('href="/topology"', response.text)
+        self.assertNotIn('href="/api-contents"', response.text)
+        self.assertNotIn('href="/god"', response.text)
+
+    def test_godmode_home_links_to_admin_tools(self):
+        response = self.client.get("/godmode")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('href="/api-contents"', response.text)
+        self.assertIn('href="/god"', response.text)
 
     def test_api_contents_page_shows_current_state(self):
         response = self.client.get("/api-contents")
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn("/api/system/processor-type", response.text)
-        self.assertIn("sx40", response.text)
+        self.assertIn("0 current endpoint values shown.", response.text)
 
     def test_processor_logs_page_loads_without_logs(self):
         response = self.client.get("/logs")
@@ -59,10 +65,11 @@ class TesseraSimulatorSmokeTests(unittest.TestCase):
         self.assertIn("Storage used by logs", response.text)
 
     def test_processor_logs_export_returns_csv(self):
-        response = self.client.get("/logs/export?minutes=60")
+        response = self.client.get("/logs/export?minutes=60&filename=Log%20Export%202026-06-16%2012%3A00%3A00.csv")
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers["content-type"], "text/csv; charset=utf-8")
+        self.assertIn('filename="Log Export 2026-06-16 12:00:00.csv"', response.headers["content-disposition"])
         self.assertIn("received_at_utc,processor_time,processor_name,processor_ip,type", response.text)
 
     def test_syslog_message_parser_strips_processor_time_and_type(self):

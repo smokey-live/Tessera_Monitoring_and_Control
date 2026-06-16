@@ -45,14 +45,19 @@ def severity_display(value: Any) -> str:
 async def startup_discovery():
     ensure_discovery_running()
 
-def page_nav(active: str = '') -> str:
+def page_nav(active: str = '', admin: bool = False) -> str:
     items = [
         ('Home', '/'),
-        ('API Contents', '/api-contents'),
-        ('God Mode', '/god'),
         ('Processor Logs', '/logs'),
         ('Topology Monitoring', '/topology'),
     ]
+    if admin:
+        items = [
+            ('Godmode Home', '/godmode'),
+            ('API Contents', '/api-contents'),
+            ('God Mode', '/god'),
+            *items,
+        ]
     links = []
     for label, href in items:
         klass = ' class="active"' if label == active else ''
@@ -202,7 +207,10 @@ def uptime_string():
     return ' '.join(out)
 
 def apply_live_values(state):
-    sys=state.setdefault('api',{}).setdefault('system',{})
+    api = state.get('api')
+    if not isinstance(api, dict) or 'system' not in api:
+        return
+    sys=api.setdefault('system',{})
     if live_read_active():
         return
     sys['current-date-time']=datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -323,6 +331,13 @@ async def api_route(path: str='', request: Request=None):
 
 @app.get('/')
 async def root():
+    return home_page(admin=False)
+
+@app.get('/godmode')
+async def godmode_home():
+    return home_page(admin=True)
+
+def home_page(admin: bool = False):
     ensure_discovery_running()
     monitors = {monitor.get('ip') for monitor in list_monitors()}
     discovered_rows = []
@@ -354,6 +369,10 @@ async def root():
               <span class="state">IP control unavailable</span>
             </div>""")
     discovered_html = ''.join(discovered_rows) if discovered_rows else '<div class="empty">Searching for Tessera processors on the local network...</div>'
+    admin_actions = """
+  <a class="action" href="/api-contents"><b>View API Contents</b><span>Browse the simulator's current API state as a searchable table.</span></a>
+  <a class="action" href="/god"><b>God Mode</b><span>Edit API endpoints directly to simulate different processor states.</span></a>""" if admin else ''
+    meta_link = '<div class="meta">Raw API data is still available at <a href="/api/">/api/</a>.</div>' if admin else ''
     return HTMLResponse(f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>{APP_NAME}</title>
 <style>
@@ -373,15 +392,14 @@ a{{color:#8cc7ff}}
 <h1>{APP_NAME}</h1>
 <div class="sub">Local tools for working with Brompton Tessera processor API data.</div>
 <div class="actions">
-  <a class="action" href="/api-contents"><b>View API Contents</b><span>Browse the simulator's current API state as a searchable table.</span></a>
-  <a class="action" href="/god"><b>God Mode</b><span>Edit API endpoints directly to simulate different processor states.</span></a>
   <a class="action" href="/logs"><b>Processor Logs</b><span>View syslog messages received from Tessera processors.</span></a>
   <a class="action" href="/topology"><b>Topology Monitoring</b><span>Monitor SX40 cable redundancy loop status.</span></a>
+  {admin_actions}
 </div>
 <h2>Available Processors</h2>
 <div class="sub">Auto-discovered via Tessera service discovery on the local network.</div>
 <div class="processors">{discovered_html}</div>
-<div class="meta">Raw API data is still available at <a href="/api/">/api/</a>.</div>
+{meta_link}
 </main></body></html>""")
 
 @app.get('/api-contents', response_class=HTMLResponse)
@@ -418,7 +436,7 @@ th,td{{border-bottom:1px solid #333;padding:8px;vertical-align:top}} tr:hover{{b
 .path{{width:34%}} td:last-child code{{white-space:pre-wrap;word-break:break-word}}
 </style></head>
 <body>
-<div class="top"><div><h1>API Contents</h1><div class="sub">{len(rows)} current endpoint values shown.</div></div>{page_nav('API Contents')}</div>
+<div class="top"><div><h1>API Contents</h1><div class="sub">{len(rows)} current endpoint values shown.</div></div>{page_nav('API Contents', admin=True)}</div>
 <form class="search" method="get" action="/api-contents"><input name="q" value="{html_escape(q)}" placeholder="Filter by path or current value"><button>Filter</button><a href="/api-contents">Clear</a></form>
 <table><thead><tr><th>Path</th><th>Type</th><th>Access</th><th>Range</th><th>Current Value</th></tr></thead><tbody>
 {''.join(rows)}
@@ -654,6 +672,20 @@ document.addEventListener('DOMContentLoaded', function() {{
     this.textContent = logsPaused ? 'Resume Refresh' : 'Pause Refresh';
     if (!logsPaused) refreshLogs();
   }});
+  document.getElementById('severity-select')?.addEventListener('change', function(event) {{
+    event.target.form.submit();
+  }});
+  document.getElementById('export-form')?.addEventListener('submit', function(event) {{
+    const now = new Date();
+    const pad = function(value) {{ return String(value).padStart(2, '0'); }};
+    const defaultName = `Log Export ${{now.getFullYear()}}-${{pad(now.getMonth() + 1)}}-${{pad(now.getDate())}} ${{pad(now.getHours())}}:${{pad(now.getMinutes())}}:${{pad(now.getSeconds())}}.csv`;
+    const filename = window.prompt('Export CSV filename', defaultName);
+    if (!filename) {{
+      event.preventDefault();
+      return;
+    }}
+    this.querySelector('input[name="filename"]').value = filename;
+  }});
   setInterval(refreshLogs, 2000);
   setInterval(refreshLogStorage, 5000);
 }});
@@ -669,12 +701,13 @@ document.addEventListener('DOMContentLoaded', function() {{
     <label>Search messages</label>
     <input name="q" value="{html_escape(q)}" placeholder="Message text">
     <label>Severity</label>
-    <select name="severity">{''.join(severity_options)}</select>
+    <select id="severity-select" name="severity">{''.join(severity_options)}</select>
     <button>Search</button>
     <a href="/logs{('?ip=' + html_escape(selected_ip)) if selected_ip else ''}">Clear</a>
   </form>
-  <form method="get" action="/logs/export">
+  <form id="export-form" method="get" action="/logs/export">
     {export_ip}
+    <input type="hidden" name="filename" value="">
     <label>Export minutes back from now</label>
     <input name="minutes" type="number" min="1" max="10080" value="60">
     <button>Export CSV</button>
@@ -725,10 +758,15 @@ async def logs_storage():
     return JSONResponse(log_storage_summary())
 
 @app.get('/logs/export')
-async def logs_export(minutes: int = 60, ip: str = ''):
+async def logs_export(minutes: int = 60, ip: str = '', filename: str = ''):
     csv_text = export_logs_csv(minutes, ip)
     suffix = ip.replace('.', '-') if ip else 'all'
-    headers = {'Content-Disposition': f'attachment; filename="processor-logs-{suffix}-{minutes}m.csv"'}
+    safe_filename = re.sub(r'[\r\n"\\/\x00]+', '_', filename or '').strip()
+    if not safe_filename:
+        safe_filename = f'processor-logs-{suffix}-{minutes}m.csv'
+    if not safe_filename.lower().endswith('.csv'):
+        safe_filename += '.csv'
+    headers = {'Content-Disposition': f'attachment; filename="{safe_filename}"'}
     return Response(csv_text, media_type='text/csv', headers=headers)
 
 @app.post('/logs/clear')
@@ -904,18 +942,33 @@ async def topology_page(msg: str = '', level: str = 'info'):
     cards_wide = get_cards_wide()
     monitored_ips = {str(monitor.get('ip')) for monitor in list_monitors()}
     quick_rows = []
+    quick_ips = set()
+    for processor in list_discovered_processors():
+        ip = str(processor.get('ip') or '')
+        if not ip or ip in monitored_ips or ip in quick_ips:
+            continue
+        quick_ips.add(ip)
+        name = html_escape(processor.get('username') or ip)
+        escaped_ip = html_escape(ip)
+        project = html_escape(processor.get('project') or 'No project reported')
+        if processor.get('api_available'):
+            quick_rows.append(f"""<div class="quick-item"><div><b>{name}</b><div class="sub">{escaped_ip} · {project}</div></div>
+              <form method="post" action="/topology/quick-add"><input type="hidden" name="ip" value="{escaped_ip}"><button>Quick Add</button></form></div>""")
+        else:
+            quick_rows.append(f'<div class="quick-item"><div><b>{name}</b><div class="sub">{escaped_ip} · {project}</div><div class="sub">Enable IP control on the processor to allow monitoring</div></div></div>')
     for processor in list_processors():
         ip = str(processor.get('ip') or '')
-        if not ip or ip in monitored_ips or processor.get('ignored'):
+        if not ip or ip in monitored_ips or ip in quick_ips or processor.get('ignored'):
             continue
+        quick_ips.add(ip)
         name = html_escape(processor.get('name') or ip)
         escaped_ip = html_escape(ip)
         if processor_ip_control_enabled(ip):
             quick_rows.append(f"""<div class="quick-item"><div><b>{name}</b><div class="sub">{escaped_ip}</div></div>
               <form method="post" action="/topology/quick-add"><input type="hidden" name="ip" value="{escaped_ip}"><button>Quick Add</button></form></div>""")
         else:
-            quick_rows.append(f'<div class="quick-item"><div class="sub">Processor with IP address {escaped_ip} is sending logs but IP control is not enabled</div></div>')
-    quick_add = f'<section class="panel quick-add"><h2>Quick Add From Logs</h2><div class="quick-list">{"".join(quick_rows)}</div></section>' if quick_rows else ''
+            quick_rows.append(f'<div class="quick-item"><div><b>{name}</b><div class="sub">{escaped_ip}</div><div class="sub">Enable IP control on the processor to allow monitoring</div></div></div>')
+    quick_add = f'<section class="panel quick-add"><h2>Quick Add Processors</h2><div class="quick-list">{"".join(quick_rows)}</div></section>' if quick_rows else ''
     flash = f'<div class="flash {html_escape(level)}">{html_escape(msg)}</div>' if msg else ''
     remaining = max(0, 20 - len(cards))
     html = f"""<!doctype html>
@@ -1436,7 +1489,7 @@ th,td{{border-bottom:1px solid #333;padding:8px;vertical-align:top}} tr:hover{{b
 .panelgrid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;margin:16px 0}} .panel,.preset-card{{background:#181818;border:1px solid #333;border-radius:8px;padding:12px}} .panel h2{{font-size:16px;margin:0 0 8px}} textarea{{display:block;width:95%;min-height:58px;background:#1d1d1d;color:#fff;border:1px solid #555;border-radius:5px;padding:7px;margin:8px 0}} .panel input{{display:block;width:95%;margin:8px 0}} .presets{{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px;margin-bottom:18px}} .preset-card form{{display:inline-block;margin:8px 6px 0 0}} .danger{{background:#a43b3b}}
 </style></head>
 <body>
-<div class="top"><div><h1>{APP_NAME} God Mode</h1><div class="sub">Edit simulator state directly. API read-only rules are bypassed here for testing clients.</div></div>{page_nav('God Mode')}</div>
+<div class="top"><div><h1>{APP_NAME} God Mode</h1><div class="sub">Edit simulator state directly. API read-only rules are bypassed here for testing clients.</div></div>{page_nav('God Mode', admin=True)}</div>
 <div class="notice">Still locked in God Mode: <code>/api/system/current-date-time</code>, <code>/api/system/uptime</code>, and everything under <code>/api/system/temperature/</code>. Live Read Real Processor intentionally overwrites those values while live read is active.</div>
 {flash}
 {preset_panel_html()}
